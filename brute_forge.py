@@ -4,13 +4,17 @@ import argparse
 import re
 
 
-async def brute_force(url, login_request, headers, follow_redirects, username, password, token_regex, status_str, status_str_neg, success_flag):
+async def brute_force(url, login_request, headers, allow_redirects, proxy, username, password, token_regex, status_str, status_str_neg, success_flag):
     async with aiohttp.ClientSession() as session:       
         csrf_token = None
         cookies = None
         try:
             # Issue a GET request and retrieve the CSRF-token
-            async with session.get(url, follow_redirects=follow_redirects) as response:
+            async with session.get(
+                url,
+                allow_redirects=allow_redirects,
+                proxy=proxy
+            ) as response:
                 body = await response.text()
                 cookies = response.cookies
 
@@ -21,15 +25,22 @@ async def brute_force(url, login_request, headers, follow_redirects, username, p
                 else: # Abort if we can"t find the CSRF-token
                     raise asyncio.CancelledError()
 
+            # Replace placeholders in HTTP headers and body
+            for k, v in login_request["headers"].items():
+                if "^CSRF^" in v:
+                    login_request["headers"][k] = v.replace("^CSRF^", csrf_token)
+
+            login_request["body"].replace("^USER^", username).replace("^PASS^", password).replace("^CSRF^", csrf_token)
+
             # Issue a login request with the CSRF-token
-            body = login_request["body"].replace("^USER^", username).replace("^PASS^", password).replace("^CSRF^", csrf_token)
             async with session.request(
                 login_request["method"],
                 url,
                 headers=login_request["headers"],
                 cookies=cookies,
-                data=body,
-                follow_redirects=follow_redirects
+                data=login_request["body"],
+                allow_redirects=allow_redirects,
+                proxy=proxy
             ) as response:
                 body = await response.text()
 
@@ -67,10 +78,10 @@ async def main(args):
     # Parse login request from file
     login_request = {}
     with open(args.request, "r") as f:
-        login_request = f.read()
+        request = f.read()
 
-        headers, body = login_request.split("\n", 1)
-        method, url = login_request.split(" ", 1)
+        headers, body = request.split("\n", 1)
+        method, url = request.split(" ", 1)
 
         headers_dict = {}
         for header in headers.split("\n")[1:]:
@@ -97,7 +108,8 @@ async def main(args):
                     args.url,
                     login_request,
                     headers,
-                    args.follow_redirects,
+                    args.allow_redirects,
+                    args.proxy,
                     username,
                     password,
                     args.token_regex,
@@ -131,20 +143,21 @@ def parse_args():
     parser.add_argument("-u", "--url", help="URL of login form", required=True)
     parser.add_argument("-r", "--request", help="File containing the login request (likely a POST request). Placeholders: username=^USER^, password=^PASS^, CSRF-token=^CSRF^", required=True)
     parser.add_argument("-hd", "--headers", help="HTTP headers for login request (JSON string). CSRF-token placeholder: ^CSRF^. Example: {'x-header1': 'yep', 'x-header2': 'nope'}")
-    parser.add_argument("-t", "--token-regex", help="Regex for CSRF-token. The CSRF-token gets set as the first group of a potential match.", required=True)
-    parser.add_argument("-fr", "--follow-redirects", help="Follow redirects", action="store_true")
+    parser.add_argument("-t", "--token-regex", help="Regex for CSRF-token. The CSRF-token is set as the first group of a potential match. Example: 'token=\"(.*?)\"'", required=True)
+    parser.add_argument("-ar", "--allow-redirects", help="Allow redirects", action="store_true")
+    parser.add_argument("--proxy", help="Proxy URL")
 
     username_group = parser.add_mutually_exclusive_group()
-    username_group.add_argument("-l", "--username", help="Single username for login", required=True)
-    username_group.add_argument("-L", "--username-file", help="File containing usernames (one per line)", required=True)
+    username_group.add_argument("-l", "--username", help="Single username for login")
+    username_group.add_argument("-L", "--username-file", help="File containing usernames (one per line)")
     
     password_group = parser.add_mutually_exclusive_group()
-    password_group.add_argument("-p", "--password", help="Single password for login", required=True)
-    password_group.add_argument("-P", "--password-file", help="File containing passwords (one per line)", required=True)
+    password_group.add_argument("-p", "--password", help="Single password for login")
+    password_group.add_argument("-P", "--password-file", help="File containing passwords (one per line)")
 
     status_group = parser.add_mutually_exclusive_group()
-    status_group.add_argument("-f", "--fail", help="String that indicates a failed login attempt", required=True)
-    status_group.add_argument("-s", "--success", help="String that indicates a successful login attempt", required=True)
+    status_group.add_argument("-f", "--fail", help="String that indicates a failed login attempt")
+    status_group.add_argument("-s", "--success", help="String that indicates a successful login attempt")
 
     return parser.parse_args()
 
