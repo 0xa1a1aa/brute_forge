@@ -4,14 +4,14 @@ import re
 from urllib.parse import urlparse
 
 
-def brute(verbose, url, login_url, login_request, headers, allow_redirects, proxies, username, password, token_regex, status_str, status_str_neg):
+def brute(verbose, url, login_request, headers, allow_redirects, proxies, username, password, token_regex, status_str, status_str_neg):
     csrf_token = None
     cookies = None
 
     # Issue a GET request and retrieve the CSRF-token
     if verbose:
         print(f"[*] Requesting {url} for CSRF-token...")
-    with requests.get(url, allow_redirects=allow_redirects, proxies=proxies) as response:
+    with requests.get(url, headers=headers, allow_redirects=allow_redirects, proxies=proxies) as response:
         body = response.text
         cookies = response.cookies
 
@@ -35,11 +35,11 @@ def brute(verbose, url, login_url, login_request, headers, allow_redirects, prox
 
     # Issue a login request with the CSRF-token
     if verbose:
-        print(f"[*] Issue login request to {login_url} - Username: {username}, Password: {password}")
+        print(f"[*] Issue login request to {login_request['url']} - Username: {username}, Password: {password}")
     success = False
     with requests.request(
         login_request["method"],
-        login_url,
+        login_request["url"],
         headers=login_request["headers"],
         cookies=cookies,
         data=request_body,
@@ -96,8 +96,8 @@ def main(args):
 
         # The protocol for the login request is taken from the supplied url
         proto = urlparse(args.url).scheme
-        login_url = proto + "://" + host + uri 
-
+        
+        login_request["url"] = proto + "://" + host + uri
         login_request["method"] = method
         login_request["headers"] = headers_dict
         login_request["body"] = body
@@ -116,7 +116,6 @@ def main(args):
             success = brute(
                 args.verbose,
                 args.url,
-                login_url,
                 login_request,
                 headers,
                 args.allow_redirects,
@@ -147,9 +146,9 @@ def parse_args():
     parser = argparse.ArgumentParser(prog="brute_forge", description="brute-force http logins protected with CSRF-tokens")
     parser.add_argument("-u", "--url", help="URL of login form", required=True)
     parser.add_argument("-r", "--request", help="File containing the login request (likely a POST request). Placeholders: username=^USER^, password=^PASS^, CSRF-token=^CSRF^", required=True)
-    parser.add_argument("-hd", "--headers", help="HTTP headers for login request (JSON string). CSRF-token placeholder: ^CSRF^. Example: {'x-header1': 'yep', 'x-header2': 'nope'}")
+    parser.add_argument("-H", "--headers", help="HTTP headers as JSON string. Placeholders: ^CSRF^. Example: {'x-header1': 'yep', 'x-csrf-token': '^CSRF^'}")
     parser.add_argument("-t", "--token-regex", help="Regex for CSRF-token. The CSRF-token is set as the first group of a potential match. Example: 'token=\"(.*?)\"'", required=True)
-    parser.add_argument("-ar", "--allow-redirects", help="Allow redirects", action="store_true")
+    parser.add_argument("-R", "--allow-redirects", help="Allow redirects", action="store_true")
     parser.add_argument("--proxy", help="Proxy URL")
     parser.add_argument("-v", "--verbose", help="Verbose", action="store_true")
 
