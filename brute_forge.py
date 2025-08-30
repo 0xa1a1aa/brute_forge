@@ -100,7 +100,7 @@ def main(args):
         login_request["url"] = proto + "://" + host + uri
         login_request["method"] = method
         login_request["headers"] = headers_dict
-        login_request["body"] = body
+        login_request["body"] = body.strip()
 
     # Use custom headers
     headers = None
